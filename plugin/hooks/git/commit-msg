@@ -1,0 +1,83 @@
+#!/usr/bin/env node
+
+/**
+ * Git commit-msg hook for SixSpec dimensional commits
+ * Validates that commit messages include WHY and HOW dimensions
+ *
+ * Installation: Copy to .git/hooks/commit-msg and make executable
+ * Or use: claude-mem install-hooks
+ */
+
+const fs = require('fs');
+const path = require('path');
+
+// Get commit message file path from git
+const commitMsgFile = process.argv[2];
+
+if (!commitMsgFile) {
+  console.error('Error: No commit message file provided');
+  process.exit(1);
+}
+
+// Read commit message
+const message = fs.readFileSync(commitMsgFile, 'utf-8');
+
+/**
+ * Validate commit message format
+ */
+function validate(msg) {
+  const errors = [];
+
+  // Remove comment lines
+  const lines = msg.split('\n').filter(line => !line.trim().startsWith('#'));
+  const cleanMsg = lines.join('\n').trim();
+
+  // Skip if empty or merge commit
+  if (!cleanMsg || cleanMsg.startsWith('Merge ')) {
+    return { valid: true, errors: [] };
+  }
+
+  // Check for subject line with type
+  const firstLine = cleanMsg.split('\n')[0];
+  if (!/^(feat|fix|refactor|docs|test|chore):/.test(firstLine)) {
+    errors.push('❌ Subject must start with type: feat|fix|refactor|docs|test|chore');
+  }
+
+  // Check for required dimensions
+  if (!/^WHY:\s*.+/m.test(cleanMsg)) {
+    errors.push('❌ Missing required dimension: WHY (purpose/business value)');
+  }
+
+  if (!/^HOW:\s*.+/m.test(cleanMsg)) {
+    errors.push('❌ Missing required dimension: HOW (technical approach)');
+  }
+
+  return { valid: errors.length === 0, errors };
+}
+
+// Validate the commit message
+const result = validate(message);
+
+if (!result.valid) {
+  console.error('\n🚫 Invalid commit message format\n');
+  console.error('Errors:');
+  result.errors.forEach(err => console.error(`  ${err}`));
+  console.error('\nExpected format:');
+  console.error('  feat|fix|refactor|docs|test|chore: <subject>\n');
+  console.error('  WHY: <purpose/business value>');
+  console.error('  HOW: <technical approach>');
+  console.error('  [WHAT: <what changed>]');
+  console.error('  [WHERE: <location/component>]');
+  console.error('  [WHO: <affected users>]');
+  console.error('  [WHEN: <time context>]\n');
+  console.error('Example:');
+  console.error('  fix: payment API timeout\n');
+  console.error('  WHY: Users abandoning carts at 25% rate due to timeout');
+  console.error('  HOW: Added retry logic with exponential backoff (3 attempts)');
+  console.error('  WHERE: src/payment/stripe_integration.ts');
+  console.error('  WHO: Premium users\n');
+  process.exit(1);
+}
+
+// Success - commit message is valid
+process.exit(0);

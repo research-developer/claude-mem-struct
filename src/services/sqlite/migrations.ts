@@ -472,6 +472,148 @@ export const migration006: Migration = {
 };
 
 /**
+ * Migration 007 - Add dimensional (SixSpec) fields to observations
+ * Implements WHY<>WHAT propagation, confidence tracking, and belief revision
+ */
+export const migration007: Migration = {
+  version: 7,
+  up: (db: Database) => {
+    // Add SixSpec dimensional fields to observations table
+    db.run(`
+      ALTER TABLE observations ADD COLUMN dim_who TEXT;
+      ALTER TABLE observations ADD COLUMN dim_what TEXT;
+      ALTER TABLE observations ADD COLUMN dim_when TEXT;
+      ALTER TABLE observations ADD COLUMN dim_where TEXT;
+      ALTER TABLE observations ADD COLUMN dim_why TEXT;
+      ALTER TABLE observations ADD COLUMN dim_how TEXT;
+    `);
+
+    // Add per-dimension confidence tracking (0.0-1.0 scale)
+    db.run(`
+      ALTER TABLE observations ADD COLUMN confidence_who REAL DEFAULT 1.0;
+      ALTER TABLE observations ADD COLUMN confidence_what REAL DEFAULT 1.0;
+      ALTER TABLE observations ADD COLUMN confidence_when REAL DEFAULT 1.0;
+      ALTER TABLE observations ADD COLUMN confidence_where REAL DEFAULT 1.0;
+      ALTER TABLE observations ADD COLUMN confidence_why REAL DEFAULT 1.0;
+      ALTER TABLE observations ADD COLUMN confidence_how REAL DEFAULT 1.0;
+    `);
+
+    // Add validation and provenance tracking
+    db.run(`
+      ALTER TABLE observations ADD COLUMN validation_score REAL;
+      ALTER TABLE observations ADD COLUMN parent_observation_id INTEGER;
+      ALTER TABLE observations ADD COLUMN dilts_level INTEGER;
+    `);
+
+    // Create index for parent-child lookups (WHAT→WHY propagation)
+    db.run(`
+      CREATE INDEX IF NOT EXISTS idx_observations_parent ON observations(parent_observation_id);
+      CREATE INDEX IF NOT EXISTS idx_observations_dilts_level ON observations(dilts_level);
+    `);
+
+    // Add dimensional fields to session_summaries
+    db.run(`
+      ALTER TABLE session_summaries ADD COLUMN dim_who TEXT;
+      ALTER TABLE session_summaries ADD COLUMN dim_what TEXT;
+      ALTER TABLE session_summaries ADD COLUMN dim_when TEXT;
+      ALTER TABLE session_summaries ADD COLUMN dim_where TEXT;
+      ALTER TABLE session_summaries ADD COLUMN dim_why TEXT;
+      ALTER TABLE session_summaries ADD COLUMN dim_how TEXT;
+    `);
+
+    console.log('✅ Added SixSpec dimensional fields for WHY<>WHAT propagation');
+  },
+
+  down: (db: Database) => {
+    // Note: SQLite doesn't support DROP COLUMN in all versions
+    // In production, would need to recreate tables without these columns
+    console.log('⚠️  Warning: SQLite ALTER TABLE DROP COLUMN not fully supported');
+    console.log('⚠️  To rollback, manually recreate the tables');
+  }
+};
+
+/**
+ * Migration 008 - Create git_commits table for dimensional commit tracking
+ * Enables queryable commit history with WHY and HOW dimensions
+ */
+export const migration008: Migration = {
+  version: 8,
+  up: (db: Database) => {
+    // Git commits table - stores dimensional metadata from commit messages
+    db.run(`
+      CREATE TABLE IF NOT EXISTS git_commits (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        commit_hash TEXT UNIQUE NOT NULL,
+        commit_type TEXT NOT NULL CHECK(commit_type IN ('feat', 'fix', 'refactor', 'docs', 'test', 'chore')),
+        subject TEXT NOT NULL,
+        project TEXT NOT NULL,
+        dim_who TEXT,
+        dim_what TEXT,
+        dim_when TEXT,
+        dim_where TEXT,
+        dim_why TEXT NOT NULL,
+        dim_how TEXT NOT NULL,
+        committed_at TEXT NOT NULL,
+        committed_at_epoch INTEGER NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_git_commits_project ON git_commits(project);
+      CREATE INDEX IF NOT EXISTS idx_git_commits_type ON git_commits(commit_type);
+      CREATE INDEX IF NOT EXISTS idx_git_commits_why ON git_commits(dim_why);
+      CREATE INDEX IF NOT EXISTS idx_git_commits_how ON git_commits(dim_how);
+      CREATE INDEX IF NOT EXISTS idx_git_commits_where ON git_commits(dim_where);
+      CREATE INDEX IF NOT EXISTS idx_git_commits_committed ON git_commits(committed_at_epoch DESC);
+    `);
+
+    // FTS5 virtual table for git commits (enables dimensional search)
+    db.run(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS git_commits_fts USING fts5(
+        subject,
+        dim_why,
+        dim_how,
+        dim_what,
+        dim_where,
+        dim_who,
+        content='git_commits',
+        content_rowid='id'
+      );
+    `);
+
+    // Triggers to keep git_commits_fts in sync
+    db.run(`
+      CREATE TRIGGER IF NOT EXISTS git_commits_ai AFTER INSERT ON git_commits BEGIN
+        INSERT INTO git_commits_fts(rowid, subject, dim_why, dim_how, dim_what, dim_where, dim_who)
+        VALUES (new.id, new.subject, new.dim_why, new.dim_how, new.dim_what, new.dim_where, new.dim_who);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS git_commits_ad AFTER DELETE ON git_commits BEGIN
+        INSERT INTO git_commits_fts(git_commits_fts, rowid, subject, dim_why, dim_how, dim_what, dim_where, dim_who)
+        VALUES('delete', old.id, old.subject, old.dim_why, old.dim_how, old.dim_what, old.dim_where, old.dim_who);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS git_commits_au AFTER UPDATE ON git_commits BEGIN
+        INSERT INTO git_commits_fts(git_commits_fts, rowid, subject, dim_why, dim_how, dim_what, dim_where, dim_who)
+        VALUES('delete', old.id, old.subject, old.dim_why, old.dim_how, old.dim_what, old.dim_where, old.dim_who);
+        INSERT INTO git_commits_fts(rowid, subject, dim_why, dim_how, dim_what, dim_where, dim_who)
+        VALUES (new.id, new.subject, new.dim_why, new.dim_how, new.dim_what, new.dim_where, new.dim_who);
+      END;
+    `);
+
+    console.log('✅ Created git_commits table for dimensional commit tracking');
+  },
+
+  down: (db: Database) => {
+    db.run(`
+      DROP TRIGGER IF EXISTS git_commits_au;
+      DROP TRIGGER IF EXISTS git_commits_ad;
+      DROP TRIGGER IF EXISTS git_commits_ai;
+      DROP TABLE IF EXISTS git_commits_fts;
+      DROP TABLE IF EXISTS git_commits;
+    `);
+  }
+};
+
+/**
  * All migrations in order
  */
 export const migrations: Migration[] = [
@@ -480,5 +622,7 @@ export const migrations: Migration[] = [
   migration003,
   migration004,
   migration005,
-  migration006
+  migration006,
+  migration007,
+  migration008
 ];

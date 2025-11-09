@@ -28,6 +28,8 @@ export class SessionStore {
     this.addObservationHierarchicalFields();
     this.makeObservationsTextNullable();
     this.createUserPromptsTable();
+    this.addDimensionalFields();
+    this.createGitCommitsTable();
   }
 
   /**
@@ -489,6 +491,170 @@ export class SessionStore {
       }
     } catch (error: any) {
       console.error('[SessionStore] Migration error (create user_prompts table):', error.message);
+    }
+  }
+
+  /**
+   * Add SixSpec dimensional fields to observations and session_summaries (migration 11)
+   */
+  private addDimensionalFields(): void {
+    try {
+      // Check if migration already applied
+      const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(11) as {version: number} | undefined;
+      if (applied) return;
+
+      // Check if dimensional fields already exist
+      const tableInfo = this.db.pragma('table_info(observations)');
+      const hasDimWhy = (tableInfo as any[]).some((col: any) => col.name === 'dim_why');
+
+      if (hasDimWhy) {
+        // Already migrated
+        this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(11, new Date().toISOString());
+        return;
+      }
+
+      console.error('[SessionStore] Adding SixSpec dimensional fields...');
+
+      // Add dimensional fields to observations
+      this.db.exec(`
+        ALTER TABLE observations ADD COLUMN dim_who TEXT;
+        ALTER TABLE observations ADD COLUMN dim_what TEXT;
+        ALTER TABLE observations ADD COLUMN dim_when TEXT;
+        ALTER TABLE observations ADD COLUMN dim_where TEXT;
+        ALTER TABLE observations ADD COLUMN dim_why TEXT;
+        ALTER TABLE observations ADD COLUMN dim_how TEXT;
+
+        ALTER TABLE observations ADD COLUMN confidence_who REAL DEFAULT 1.0;
+        ALTER TABLE observations ADD COLUMN confidence_what REAL DEFAULT 1.0;
+        ALTER TABLE observations ADD COLUMN confidence_when REAL DEFAULT 1.0;
+        ALTER TABLE observations ADD COLUMN confidence_where REAL DEFAULT 1.0;
+        ALTER TABLE observations ADD COLUMN confidence_why REAL DEFAULT 1.0;
+        ALTER TABLE observations ADD COLUMN confidence_how REAL DEFAULT 1.0;
+
+        ALTER TABLE observations ADD COLUMN validation_score REAL;
+        ALTER TABLE observations ADD COLUMN parent_observation_id INTEGER;
+        ALTER TABLE observations ADD COLUMN dilts_level INTEGER;
+
+        CREATE INDEX IF NOT EXISTS idx_observations_parent ON observations(parent_observation_id);
+        CREATE INDEX IF NOT EXISTS idx_observations_dilts_level ON observations(dilts_level);
+      `);
+
+      // Add dimensional fields to session_summaries
+      this.db.exec(`
+        ALTER TABLE session_summaries ADD COLUMN dim_who TEXT;
+        ALTER TABLE session_summaries ADD COLUMN dim_what TEXT;
+        ALTER TABLE session_summaries ADD COLUMN dim_when TEXT;
+        ALTER TABLE session_summaries ADD COLUMN dim_where TEXT;
+        ALTER TABLE session_summaries ADD COLUMN dim_why TEXT;
+        ALTER TABLE session_summaries ADD COLUMN dim_how TEXT;
+      `);
+
+      // Record migration
+      this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(11, new Date().toISOString());
+
+      console.error('[SessionStore] Successfully added SixSpec dimensional fields');
+    } catch (error: any) {
+      console.error('[SessionStore] Migration error (add dimensional fields):', error.message);
+    }
+  }
+
+  /**
+   * Create git_commits table with FTS5 support (migration 12)
+   */
+  private createGitCommitsTable(): void {
+    try {
+      // Check if migration already applied
+      const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(12) as {version: number} | undefined;
+      if (applied) return;
+
+      // Check if table already exists
+      const tableInfo = this.db.pragma('table_info(git_commits)');
+      if ((tableInfo as any[]).length > 0) {
+        // Already migrated
+        this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(12, new Date().toISOString());
+        return;
+      }
+
+      console.error('[SessionStore] Creating git_commits table with FTS5 support...');
+
+      // Begin transaction
+      this.db.exec('BEGIN TRANSACTION');
+
+      try {
+        // Create main table
+        this.db.exec(`
+          CREATE TABLE git_commits (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            commit_hash TEXT UNIQUE NOT NULL,
+            commit_type TEXT NOT NULL CHECK(commit_type IN ('feat', 'fix', 'refactor', 'docs', 'test', 'chore')),
+            subject TEXT NOT NULL,
+            project TEXT NOT NULL,
+            dim_who TEXT,
+            dim_what TEXT,
+            dim_when TEXT,
+            dim_where TEXT,
+            dim_why TEXT NOT NULL,
+            dim_how TEXT NOT NULL,
+            committed_at TEXT NOT NULL,
+            committed_at_epoch INTEGER NOT NULL
+          );
+
+          CREATE INDEX IF NOT EXISTS idx_git_commits_project ON git_commits(project);
+          CREATE INDEX IF NOT EXISTS idx_git_commits_type ON git_commits(commit_type);
+          CREATE INDEX IF NOT EXISTS idx_git_commits_why ON git_commits(dim_why);
+          CREATE INDEX IF NOT EXISTS idx_git_commits_how ON git_commits(dim_how);
+          CREATE INDEX IF NOT EXISTS idx_git_commits_where ON git_commits(dim_where);
+          CREATE INDEX IF NOT EXISTS idx_git_commits_committed ON git_commits(committed_at_epoch DESC);
+        `);
+
+        // Create FTS5 virtual table
+        this.db.exec(`
+          CREATE VIRTUAL TABLE git_commits_fts USING fts5(
+            subject,
+            dim_why,
+            dim_how,
+            dim_what,
+            dim_where,
+            dim_who,
+            content='git_commits',
+            content_rowid='id'
+          );
+        `);
+
+        // Create triggers to sync FTS5
+        this.db.exec(`
+          CREATE TRIGGER git_commits_ai AFTER INSERT ON git_commits BEGIN
+            INSERT INTO git_commits_fts(rowid, subject, dim_why, dim_how, dim_what, dim_where, dim_who)
+            VALUES (new.id, new.subject, new.dim_why, new.dim_how, new.dim_what, new.dim_where, new.dim_who);
+          END;
+
+          CREATE TRIGGER git_commits_ad AFTER DELETE ON git_commits BEGIN
+            INSERT INTO git_commits_fts(git_commits_fts, rowid, subject, dim_why, dim_how, dim_what, dim_where, dim_who)
+            VALUES('delete', old.id, old.subject, old.dim_why, old.dim_how, old.dim_what, old.dim_where, old.dim_who);
+          END;
+
+          CREATE TRIGGER git_commits_au AFTER UPDATE ON git_commits BEGIN
+            INSERT INTO git_commits_fts(git_commits_fts, rowid, subject, dim_why, dim_how, dim_what, dim_where, dim_who)
+            VALUES('delete', old.id, old.subject, old.dim_why, old.dim_how, old.dim_what, old.dim_where, old.dim_who);
+            INSERT INTO git_commits_fts(rowid, subject, dim_why, dim_how, dim_what, dim_where, dim_who)
+            VALUES (new.id, new.subject, new.dim_why, new.dim_how, new.dim_what, new.dim_where, new.dim_who);
+          END;
+        `);
+
+        // Commit transaction
+        this.db.exec('COMMIT');
+
+        // Record migration
+        this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(12, new Date().toISOString());
+
+        console.error('[SessionStore] Successfully created git_commits table with FTS5 support');
+      } catch (error: any) {
+        // Rollback on error
+        this.db.exec('ROLLBACK');
+        throw error;
+      }
+    } catch (error: any) {
+      console.error('[SessionStore] Migration error (create git_commits table):', error.message);
     }
   }
 
@@ -1431,6 +1597,270 @@ export class SessionStore {
       console.error('[SessionStore] Error querying timeline records:', err.message);
       return { observations: [], sessions: [], prompts: [] };
     }
+  }
+
+  /**
+   * Store a git commit with dimensional metadata
+   */
+  storeGitCommit(
+    commitHash: string,
+    commitType: 'feat' | 'fix' | 'refactor' | 'docs' | 'test' | 'chore',
+    subject: string,
+    project: string,
+    dimensions: {
+      who?: string;
+      what?: string;
+      when?: string;
+      where?: string;
+      why: string;
+      how: string;
+    },
+    committedAt?: Date
+  ): number {
+    const now = committedAt || new Date();
+    const nowEpoch = now.getTime();
+
+    const stmt = this.db.prepare(`
+      INSERT OR REPLACE INTO git_commits
+      (commit_hash, commit_type, subject, project, dim_who, dim_what, dim_when,
+       dim_where, dim_why, dim_how, committed_at, committed_at_epoch)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const result = stmt.run(
+      commitHash,
+      commitType,
+      subject,
+      project,
+      dimensions.who || null,
+      dimensions.what || null,
+      dimensions.when || null,
+      dimensions.where || null,
+      dimensions.why,
+      dimensions.how,
+      now.toISOString(),
+      nowEpoch
+    );
+
+    return result.lastInsertRowid as number;
+  }
+
+  /**
+   * Query git commits by dimension
+   */
+  queryGitCommitsByDimension(
+    project: string,
+    filters: {
+      who?: string;
+      what?: string;
+      when?: string;
+      where?: string;
+      why?: string;
+      how?: string;
+      type?: 'feat' | 'fix' | 'refactor' | 'docs' | 'test' | 'chore';
+    },
+    limit: number = 50
+  ): any[] {
+    const conditions: string[] = ['project = ?'];
+    const params: any[] = [project];
+
+    // Add dimension filters
+    if (filters.who) {
+      conditions.push('dim_who LIKE ?');
+      params.push(`%${filters.who}%`);
+    }
+    if (filters.what) {
+      conditions.push('dim_what LIKE ?');
+      params.push(`%${filters.what}%`);
+    }
+    if (filters.when) {
+      conditions.push('dim_when LIKE ?');
+      params.push(`%${filters.when}%`);
+    }
+    if (filters.where) {
+      conditions.push('dim_where LIKE ?');
+      params.push(`%${filters.where}%`);
+    }
+    if (filters.why) {
+      conditions.push('dim_why LIKE ?');
+      params.push(`%${filters.why}%`);
+    }
+    if (filters.how) {
+      conditions.push('dim_how LIKE ?');
+      params.push(`%${filters.how}%`);
+    }
+    if (filters.type) {
+      conditions.push('commit_type = ?');
+      params.push(filters.type);
+    }
+
+    const sql = `
+      SELECT * FROM git_commits
+      WHERE ${conditions.join(' AND ')}
+      ORDER BY committed_at_epoch DESC
+      LIMIT ?
+    `;
+
+    params.push(limit);
+
+    return this.db.prepare(sql).all(...params) as any[];
+  }
+
+  /**
+   * Query observations by dimension
+   */
+  queryObservationsByDimension(
+    project: string,
+    filters: {
+      who?: string;
+      what?: string;
+      when?: string;
+      where?: string;
+      why?: string;
+      how?: string;
+      type?: 'decision' | 'bugfix' | 'feature' | 'refactor' | 'discovery' | 'change';
+    },
+    limit: number = 50
+  ): any[] {
+    const conditions: string[] = ['project = ?'];
+    const params: any[] = [project];
+
+    // Add dimension filters
+    if (filters.who) {
+      conditions.push('dim_who LIKE ?');
+      params.push(`%${filters.who}%`);
+    }
+    if (filters.what) {
+      conditions.push('dim_what LIKE ?');
+      params.push(`%${filters.what}%`);
+    }
+    if (filters.when) {
+      conditions.push('dim_when LIKE ?');
+      params.push(`%${filters.when}%`);
+    }
+    if (filters.where) {
+      conditions.push('dim_where LIKE ?');
+      params.push(`%${filters.where}%`);
+    }
+    if (filters.why) {
+      conditions.push('dim_why LIKE ?');
+      params.push(`%${filters.why}%`);
+    }
+    if (filters.how) {
+      conditions.push('dim_how LIKE ?');
+      params.push(`%${filters.how}%`);
+    }
+    if (filters.type) {
+      conditions.push('type = ?');
+      params.push(filters.type);
+    }
+
+    const sql = `
+      SELECT * FROM observations
+      WHERE ${conditions.join(' AND ')}
+      ORDER BY created_at_epoch DESC
+      LIMIT ?
+    `;
+
+    params.push(limit);
+
+    return this.db.prepare(sql).all(...params) as any[];
+  }
+
+  /**
+   * Trace purpose chain (WHY propagation) from an observation
+   * Follows parent_observation_id to root
+   */
+  tracePurposeChain(observationId: number): Array<{
+    id: number;
+    dim_what: string | null;
+    dim_why: string | null;
+    dilts_level: number | null;
+    created_at: string;
+  }> {
+    const chain: any[] = [];
+    let currentId: number | null = observationId;
+
+    while (currentId !== null) {
+      const stmt = this.db.prepare(`
+        SELECT id, dim_what, dim_why, dilts_level, created_at, parent_observation_id
+        FROM observations
+        WHERE id = ?
+      `);
+
+      const obs = stmt.get(currentId) as any;
+
+      if (!obs) break;
+
+      chain.push({
+        id: obs.id,
+        dim_what: obs.dim_what,
+        dim_why: obs.dim_why,
+        dilts_level: obs.dilts_level,
+        created_at: obs.created_at
+      });
+
+      currentId = obs.parent_observation_id;
+    }
+
+    // Return in reverse order (root first, leaf last)
+    return chain.reverse();
+  }
+
+  /**
+   * Get all unique WHY values for a project (purpose inventory)
+   */
+  getUniquePurposes(project: string): Array<{ why: string; count: number }> {
+    const stmt = this.db.prepare(`
+      SELECT dim_why as why, COUNT(*) as count
+      FROM observations
+      WHERE project = ? AND dim_why IS NOT NULL
+      GROUP BY dim_why
+      ORDER BY count DESC
+    `);
+
+    return stmt.all(project) as any[];
+  }
+
+  /**
+   * Get all unique HOW values for a project (method inventory)
+   */
+  getUniqueMethods(project: string): Array<{ how: string; count: number }> {
+    const stmt = this.db.prepare(`
+      SELECT dim_how as how, COUNT(*) as count
+      FROM observations
+      WHERE project = ? AND dim_how IS NOT NULL
+      GROUP BY dim_how
+      ORDER BY count DESC
+    `);
+
+    return stmt.all(project) as any[];
+  }
+
+  /**
+   * Get validation history for belief revision tracking
+   * Shows how confidence changed over time based on actual results
+   */
+  getValidationHistory(project: string, limit: number = 100): Array<{
+    id: number;
+    type: string;
+    dim_what: string | null;
+    dim_why: string | null;
+    validation_score: number | null;
+    confidence_what: number;
+    confidence_why: number;
+    created_at: string;
+  }> {
+    const stmt = this.db.prepare(`
+      SELECT id, type, dim_what, dim_why, validation_score,
+             confidence_what, confidence_why, created_at
+      FROM observations
+      WHERE project = ? AND validation_score IS NOT NULL
+      ORDER BY created_at_epoch DESC
+      LIMIT ?
+    `);
+
+    return stmt.all(project, limit) as any[];
   }
 
   /**

@@ -217,6 +217,24 @@ export interface ObservationRow {
   prompt_number: number | null;
   created_at: string;
   created_at_epoch: number;
+  // SixSpec dimensional fields (WHY<>WHAT propagation)
+  dim_who: string | null;
+  dim_what: string | null;
+  dim_when: string | null;
+  dim_where: string | null;
+  dim_why: string | null;
+  dim_how: string | null;
+  // Per-dimension confidence tracking (0.0-1.0)
+  confidence_who: number;
+  confidence_what: number;
+  confidence_when: number;
+  confidence_where: number;
+  confidence_why: number;
+  confidence_how: number;
+  // Validation and provenance
+  validation_score: number | null;
+  parent_observation_id: number | null;
+  dilts_level: number | null;
 }
 
 export interface SessionSummaryRow {
@@ -234,6 +252,13 @@ export interface SessionSummaryRow {
   prompt_number: number | null;
   created_at: string;
   created_at_epoch: number;
+  // SixSpec dimensional fields
+  dim_who: string | null;
+  dim_what: string | null;
+  dim_when: string | null;
+  dim_where: string | null;
+  dim_why: string | null;
+  dim_how: string | null;
 }
 
 export interface UserPromptRow {
@@ -243,6 +268,22 @@ export interface UserPromptRow {
   prompt_text: string;
   created_at: string;
   created_at_epoch: number;
+}
+
+export interface GitCommitRow {
+  id: number;
+  commit_hash: string;
+  commit_type: 'feat' | 'fix' | 'refactor' | 'docs' | 'test' | 'chore';
+  subject: string;
+  project: string;
+  dim_who: string | null;
+  dim_what: string | null;
+  dim_when: string | null;
+  dim_where: string | null;
+  dim_why: string;
+  dim_how: string;
+  committed_at: string;
+  committed_at_epoch: number;
 }
 
 /**

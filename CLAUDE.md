@@ -304,6 +304,58 @@ Use this when:
 
 ## Recent Changes
 
+### v5.2.2 - SixSpec Integration: Dimensional Tracking and Belief Revision
+**Major Feature**: SixSpec Dimensional Memory with WHY<>WHAT Propagation
+
+Integrates the SixSpec framework's dimensional specification system into claude-mem, enabling queryable beliefs, confidence tracking, and belief revision based on actual results.
+
+**Core Principles Implemented**:
+1. **WHY<>WHAT Propagation**: Parent's WHAT becomes child's WHY, maintaining purpose throughout execution chains
+2. **Per-Dimension Confidence Tracking**: Track confidence (0.0-1.0) for each of the six dimensions (WHO, WHAT, WHEN, WHERE, WHY, HOW)
+3. **Validation Over Prediction**: Revise beliefs based on actual validation results, not predicted outcomes
+4. **Queryable Commit History**: Git commits with required WHY and HOW dimensions for traceable decision history
+5. **Purpose Tracing**: Follow provenance chains from leaf observations to root purposes
+
+**Database Schema Extensions** (+18 columns):
+- **Observations table**: dim_who, dim_what, dim_when, dim_where, dim_why, dim_how
+- **Confidence tracking**: confidence_who, confidence_what, confidence_when, confidence_where, confidence_why, confidence_how
+- **Provenance**: parent_observation_id (for WHAT→WHY chains), dilts_level (hierarchy tracking)
+- **Validation**: validation_score (actual result quality, not prediction)
+- **Git commits table**: Stores dimensional metadata from commit messages with FTS5 search
+
+**New MCP Tools** (+5 search capabilities):
+1. `query_by_dimension` - Query observations by WHO/WHAT/WHEN/WHERE/WHY/HOW
+2. `trace_purpose_chain` - Follow WHY propagation from observation to root
+3. `query_git_commits` - Search commit history by dimensional criteria
+4. `get_purpose_inventory` - List all unique WHY values and frequencies
+5. `get_validation_history` - Track belief revision over time
+
+**Git Integration**:
+- **commit-msg hook**: Validates commit messages require WHY and HOW dimensions
+- **GitCommitParser**: Parses dimensional commit messages with type prefixes (feat, fix, refactor, docs, test, chore)
+- **Commit format**:
+  ```
+  feat: add payment processing
+
+  WHY: Enable premium subscriptions (business value)
+  HOW: Stripe integration with webhook handlers (technical approach)
+  WHERE: src/payment/stripe.ts (optional)
+  WHO: Premium users (optional)
+  ```
+
+**SessionStore Methods** (+8 query methods):
+- `queryObservationsByDimension()` - Filter observations by dimensional criteria
+- `queryGitCommitsByDimension()` - Filter commits by dimensional criteria
+- `tracePurposeChain()` - Follow parent_observation_id to root
+- `getUniquePurposes()` - Purpose inventory for project
+- `getUniqueMethods()` - Method inventory (HOW dimension)
+- `getValidationHistory()` - Belief revision tracking
+- `storeGitCommit()` - Save dimensional commit metadata
+
+**Why This Matters**: Enables revising beliefs and confidence based on actual outcomes, not predictions. Query memory by purpose (WHY), method (HOW), or any other dimension. Trace decision chains to understand why specific actions were taken. Build a queryable history of technical decisions with full rationale.
+
+**Installation**: The git commit-msg hook is available at `plugin/hooks/git/commit-msg`. Copy to `.git/hooks/commit-msg` and make executable for dimensional commit validation.
+
 ### v5.1.2 - Theme Toggle
 **Theme Support**: Light/dark mode for viewer UI
 - User-selectable theme with persistent settings
