@@ -1690,6 +1690,271 @@ const tools = [
         };
       }
     }
+  },
+  {
+    name: 'query_by_dimension',
+    description: 'Query observations using SixSpec dimensional filters (WHO, WHAT, WHEN, WHERE, WHY, HOW). Enables searching by purpose (WHY), method (HOW), actors (WHO), components (WHERE), and more.',
+    inputSchema: z.object({
+      project: z.string().describe('Project name to search within'),
+      who: z.string().optional().describe('Filter by WHO dimension (actors, stakeholders)'),
+      what: z.string().optional().describe('Filter by WHAT dimension (actions, objects)'),
+      when: z.string().optional().describe('Filter by WHEN dimension (temporal context)'),
+      where: z.string().optional().describe('Filter by WHERE dimension (spatial context, components)'),
+      why: z.string().optional().describe('Filter by WHY dimension (purpose, motivation)'),
+      how: z.string().optional().describe('Filter by HOW dimension (methods, processes)'),
+      type: z.enum(['decision', 'bugfix', 'feature', 'refactor', 'discovery', 'change']).optional().describe('Filter by observation type'),
+      limit: z.number().optional().default(50).describe('Maximum number of results (default: 50)')
+    }),
+    handler: async (args: any) => {
+      try {
+        const { project, limit = 50, ...filters } = args;
+        const results = store.queryObservationsByDimension(project, filters, limit);
+
+        if (results.length === 0) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: `No observations found matching dimensional criteria`
+            }]
+          };
+        }
+
+        const formattedResults = results.map((obs, idx) => {
+          const lines: string[] = [];
+          lines.push(`${idx + 1}. ${obs.title || `Observation #${obs.id}`}`);
+
+          // Show matched dimensions
+          if (obs.dim_why) lines.push(`   WHY: ${obs.dim_why}`);
+          if (obs.dim_how) lines.push(`   HOW: ${obs.dim_how}`);
+          if (obs.dim_what) lines.push(`   WHAT: ${obs.dim_what}`);
+          if (obs.dim_where) lines.push(`   WHERE: ${obs.dim_where}`);
+          if (obs.dim_who) lines.push(`   WHO: ${obs.dim_who}`);
+          if (obs.dim_when) lines.push(`   WHEN: ${obs.dim_when}`);
+
+          lines.push(`   Date: ${new Date(obs.created_at_epoch).toLocaleString()}`);
+          lines.push(`   Source: claude-mem://observation/${obs.id}`);
+
+          return lines.join('\n');
+        });
+
+        const header = `Found ${results.length} observation(s) matching dimensional criteria:\n\n`;
+        return {
+          content: [{
+            type: 'text' as const,
+            text: header + formattedResults.join('\n\n')
+          }]
+        };
+      } catch (error: any) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `Query failed: ${error.message}`
+          }],
+          isError: true
+        };
+      }
+    }
+  },
+  {
+    name: 'trace_purpose_chain',
+    description: 'Trace the WHY<>WHAT propagation chain from an observation to its root. Shows how parent\'s WHAT becomes child\'s WHY (SixSpec principle).',
+    inputSchema: z.object({
+      observation_id: z.number().describe('Observation ID to trace purpose chain from')
+    }),
+    handler: async (args: any) => {
+      try {
+        const { observation_id } = args;
+        const chain = store.tracePurposeChain(observation_id);
+
+        if (chain.length === 0) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: `No purpose chain found for observation #${observation_id}`
+            }]
+          };
+        }
+
+        const formattedChain = chain.map((item, idx) => {
+          const lines: string[] = [];
+          lines.push(`${idx + 1}. Observation #${item.id}${item.dilts_level ? ` (Level ${item.dilts_level})` : ''}`);
+          if (item.dim_what) lines.push(`   WHAT: ${item.dim_what}`);
+          if (item.dim_why) lines.push(`   WHY: ${item.dim_why}`);
+          lines.push(`   Date: ${new Date(item.created_at).toLocaleString()}`);
+          return lines.join('\n');
+        });
+
+        const header = `Purpose Chain (Root → Leaf):\n\n`;
+        const explanation = `\n\n💡 WHY<>WHAT Propagation:\nEach level's WHAT becomes the next level's WHY, maintaining purpose throughout execution.`;
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: header + formattedChain.join('\n\n') + explanation
+          }]
+        };
+      } catch (error: any) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `Trace failed: ${error.message}`
+          }],
+          isError: true
+        };
+      }
+    }
+  },
+  {
+    name: 'query_git_commits',
+    description: 'Query git commits by dimensional metadata (WHY, HOW, WHERE, etc.). Enables searching commit history by purpose and technical approach.',
+    inputSchema: z.object({
+      project: z.string().describe('Project name to search within'),
+      who: z.string().optional().describe('Filter by WHO dimension'),
+      what: z.string().optional().describe('Filter by WHAT dimension'),
+      when: z.string().optional().describe('Filter by WHEN dimension'),
+      where: z.string().optional().describe('Filter by WHERE dimension (files, components)'),
+      why: z.string().optional().describe('Filter by WHY dimension (purpose)'),
+      how: z.string().optional().describe('Filter by HOW dimension (technical approach)'),
+      type: z.enum(['feat', 'fix', 'refactor', 'docs', 'test', 'chore']).optional().describe('Filter by commit type'),
+      limit: z.number().optional().default(50).describe('Maximum number of results (default: 50)')
+    }),
+    handler: async (args: any) => {
+      try {
+        const { project, limit = 50, ...filters } = args;
+        const results = store.queryGitCommitsByDimension(project, filters, limit);
+
+        if (results.length === 0) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: `No git commits found matching dimensional criteria`
+            }]
+          };
+        }
+
+        const formattedResults = results.map((commit, idx) => {
+          const lines: string[] = [];
+          lines.push(`${idx + 1}. [${commit.commit_type}] ${commit.subject}`);
+          lines.push(`   Commit: ${commit.commit_hash.substring(0, 8)}`);
+          lines.push(`   WHY: ${commit.dim_why}`);
+          lines.push(`   HOW: ${commit.dim_how}`);
+          if (commit.dim_where) lines.push(`   WHERE: ${commit.dim_where}`);
+          if (commit.dim_who) lines.push(`   WHO: ${commit.dim_who}`);
+          lines.push(`   Date: ${new Date(commit.committed_at_epoch).toLocaleString()}`);
+          return lines.join('\n');
+        });
+
+        const header = `Found ${results.length} commit(s) matching dimensional criteria:\n\n`;
+        return {
+          content: [{
+            type: 'text' as const,
+            text: header + formattedResults.join('\n\n')
+          }]
+        };
+      } catch (error: any) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `Query failed: ${error.message}`
+          }],
+          isError: true
+        };
+      }
+    }
+  },
+  {
+    name: 'get_purpose_inventory',
+    description: 'Get all unique WHY (purpose) values for a project. Shows what purposes have been pursued and how frequently.',
+    inputSchema: z.object({
+      project: z.string().describe('Project name to get purpose inventory for')
+    }),
+    handler: async (args: any) => {
+      try {
+        const { project } = args;
+        const purposes = store.getUniquePurposes(project);
+
+        if (purposes.length === 0) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: `No purposes found for project "${project}"`
+            }]
+          };
+        }
+
+        const formattedPurposes = purposes.map((item, idx) => {
+          return `${idx + 1}. ${item.why} (${item.count} occurrence${item.count > 1 ? 's' : ''})`;
+        });
+
+        const header = `Purpose Inventory for "${project}":\n\n`;
+        return {
+          content: [{
+            type: 'text' as const,
+            text: header + formattedPurposes.join('\n')
+          }]
+        };
+      } catch (error: any) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `Query failed: ${error.message}`
+          }],
+          isError: true
+        };
+      }
+    }
+  },
+  {
+    name: 'get_validation_history',
+    description: 'Get validation history showing belief revision over time. Shows how confidence changed based on actual results (SixSpec validation over prediction principle).',
+    inputSchema: z.object({
+      project: z.string().describe('Project name to get validation history for'),
+      limit: z.number().optional().default(100).describe('Maximum number of results (default: 100)')
+    }),
+    handler: async (args: any) => {
+      try {
+        const { project, limit = 100 } = args;
+        const history = store.getValidationHistory(project, limit);
+
+        if (history.length === 0) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: `No validation history found for project "${project}"`
+            }]
+          };
+        }
+
+        const formattedHistory = history.map((item, idx) => {
+          const lines: string[] = [];
+          lines.push(`${idx + 1}. [${item.type}] ${item.dim_what || 'Unknown action'}`);
+          if (item.dim_why) lines.push(`   WHY: ${item.dim_why}`);
+          lines.push(`   Validation Score: ${item.validation_score?.toFixed(2) || 'N/A'}`);
+          lines.push(`   Confidence (WHAT): ${item.confidence_what.toFixed(2)}`);
+          lines.push(`   Confidence (WHY): ${item.confidence_why.toFixed(2)}`);
+          lines.push(`   Date: ${new Date(item.created_at).toLocaleString()}`);
+          return lines.join('\n');
+        });
+
+        const header = `Validation History for "${project}":\n\n`;
+        const explanation = `\n\n💡 Belief Revision:\nValidation scores are based on actual results, not predictions.\nConfidence is updated based on validation outcomes.`;
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: header + formattedHistory.join('\n\n') + explanation
+          }]
+        };
+      } catch (error: any) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `Query failed: ${error.message}`
+          }],
+          isError: true
+        };
+      }
+    }
   }
 ];
 
